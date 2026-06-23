@@ -267,6 +267,11 @@ body.gotty-vkb-open #terminal { height: calc(100% - var(--gotty-vkb-h)); }
 }
 
 function isTouchDevice(): boolean {
+    // Opt-in override for non-touch devices (compact keyboards without Esc,
+    // and for testing): set localStorage["gotty-vkb-force"] = "1".
+    if (localStorage.getItem("gotty-vkb-force") === "1") {
+        return true;
+    }
     return "ontouchstart" in window || navigator.maxTouchPoints > 0;
 }
 
