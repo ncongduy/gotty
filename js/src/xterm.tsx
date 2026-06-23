@@ -286,4 +286,22 @@ export class GoTTYXterm {
         this.fitAddOn.fit();
         this.term.scrollToBottom();
     }
+
+    // When suppressed, focusing xterm's hidden textarea will not raise the
+    // device's native soft keyboard (used while the on-screen keyboard is open
+    // so it is the sole input source). xterm exposes `term.textarea`.
+    setSoftKeyboardSuppressed(on: boolean): void {
+        const ta = this.term.textarea;
+        if (!ta) {
+            return;
+        }
+        if (on) {
+            ta.setAttribute("inputmode", "none");
+        } else {
+            ta.removeAttribute("inputmode");
+        }
+        // Re-focus so the browser re-evaluates whether to show the OS keyboard.
+        this.term.blur();
+        this.term.focus();
+    }
 }
