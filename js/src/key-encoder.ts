@@ -21,6 +21,8 @@ export const SPECIAL_KEYS: Record<string, { seq: string; shiftSeq?: string }> = 
     End: { seq: "\x1b[F" },
     PgUp: { seq: "\x1b[5~" },
     PgDn: { seq: "\x1b[6~" },
+    Backspace: { seq: "\x7f" },
+    Enter: { seq: "\r" },
 };
 
 // Encode a single printable character with the armed modifiers.

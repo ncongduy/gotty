@@ -24,6 +24,10 @@ describe("encodeChar", () => {
     it("combines Ctrl+Alt (ESC then control code)", () => {
         expect(encodeChar("a", { ...none, ctrl: true, alt: true })).toBe("\x1b\x01");
     });
+    it("maps Ctrl+symbol into the C0 control range", () => {
+        expect(encodeChar("[", { ...none, ctrl: true })).toBe("\x1b");
+        expect(encodeChar("]", { ...none, ctrl: true })).toBe("\x1d");
+    });
 });
 
 describe("encodeSpecial", () => {
@@ -41,5 +45,9 @@ describe("encodeSpecial", () => {
     });
     it("returns empty string for an unknown key", () => {
         expect(encodeSpecial("Nope", none)).toBe("");
+    });
+    it("encodes Backspace as DEL and Enter as CR", () => {
+        expect(encodeSpecial("Backspace", none)).toBe("\x7f");
+        expect(encodeSpecial("Enter", none)).toBe("\r");
     });
 });
