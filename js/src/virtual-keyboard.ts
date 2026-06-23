@@ -224,9 +224,7 @@ class VirtualKeyboard {
                 }
                 // Keep xterm's textarea focused (never blur) on tap.
                 btn.addEventListener("mousedown", (e) => e.preventDefault());
-                btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-                btn.addEventListener("click", (e) => {
-                    e.preventDefault();
+                const dispatch = () => {
                     switch (key.type) {
                         case "char":
                             this.sendChar(key);
@@ -241,6 +239,24 @@ class VirtualKeyboard {
                             key.action === "copy" ? this.copy() : this.paste();
                             break;
                     }
+                };
+                // iOS WebKit (Safari/Chrome) suppresses the synthesized `click`
+                // when `touchstart` is preventDefaulted, so the old click handler
+                // never fired on iPhone. Activate on `touchend` for touch, and keep
+                // `click` for desktop mouse (deduped so a touch never double-fires).
+                let fromTouch = false;
+                btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+                btn.addEventListener("touchend", (e) => {
+                    e.preventDefault();
+                    fromTouch = true;
+                    dispatch();
+                }, { passive: false });
+                btn.addEventListener("click", () => {
+                    if (fromTouch) {
+                        fromTouch = false;
+                        return;
+                    }
+                    dispatch();
                 });
                 if (key.type === "mod") {
                     this.modButtons.set(key.mod, btn);
