@@ -27,6 +27,7 @@ export class GoTTYXterm {
     toServer!: (data: string | Uint8Array) => void;
     encoder: TextEncoder;
     altIsMeta: boolean = false;
+    inputTransformer?: (input: string) => string;
 
     constructor(elem: HTMLElement, preferences: Record<string, unknown> = {}) {
         this.elem = elem;
@@ -230,7 +231,8 @@ export class GoTTYXterm {
         }
 
         this.onDataHandler = this.term.onData((input) => {
-            this.toServer(this.encoder.encode(input));
+            const data = this.inputTransformer ? this.inputTransformer(input) : input;
+            this.toServer(this.encoder.encode(data));
         });
     };
 
@@ -266,5 +268,22 @@ export class GoTTYXterm {
 
     focus(): void {
         this.term.focus();
+    }
+
+    setInputTransformer(fn: (input: string) => string): void {
+        this.inputTransformer = fn;
+    }
+
+    sendString(data: string): void {
+        this.toServer(this.encoder.encode(data));
+    }
+
+    getSelection(): string {
+        return this.term.getSelection();
+    }
+
+    fit(): void {
+        this.fitAddOn.fit();
+        this.term.scrollToBottom();
     }
 }
