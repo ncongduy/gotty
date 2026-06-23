@@ -1,48 +1,83 @@
-// A toggleable on-screen key bar for mobile/touch use. Supplies special keys
-// (Esc, Tab, arrows, ~, |, ...) and sticky Ctrl/Alt/Shift modifiers that
-// transform the next character typed on the device's native keyboard. Mirrors
-// the floating-UI pattern in theme-picker.ts (injected style + body-appended
-// DOM). Renders only on touch devices; open/closed state persists.
+// A toggleable full on-screen US (ANSI) keyboard for mobile/touch use. Renders
+// every letter, digit, and ANSI symbol at once (no horizontal scrolling) plus a
+// function row (Esc, arrows, Home/End, PgUp/PgDn, Copy, Paste) and Ctrl/Alt/Shift
+// modifiers. Shift is a sticky layer toggle that re-labels keys to their shifted
+// variant; Ctrl/Alt are one-shot modifiers applied to the next key tap. While the
+// keyboard is open the native soft keyboard is suppressed so on-screen taps are
+// the sole input. Mirrors the floating-UI pattern in theme-picker.ts. Touch-only;
+// open/closed state persists in localStorage.
 
 import { GoTTYXterm } from "./xterm";
 import { encodeChar, encodeSpecial, Modifiers } from "./key-encoder";
 
 const STORAGE_OPEN = "gotty-vkb-open";
+const STORAGE_FORCE = "gotty-vkb-force";
 
+type CharKey = { type: "char"; lower: string; upper: string; flex?: number };
 type KeyDef =
-    | { label: string; type: "mod"; mod: keyof Modifiers }
-    | { label: string; type: "special"; name: string }
-    | { label: string; type: "char"; char: string }
-    | { label: string; type: "action"; action: "copy" | "paste" };
+    | CharKey
+    | { type: "special"; name: string; label: string; flex?: number }
+    | { type: "mod"; mod: keyof Modifiers; label: string; flex?: number }
+    | { type: "action"; action: "copy" | "paste"; label: string; flex?: number };
 
-const KEYS: KeyDef[] = [
-    { label: "Ctrl", type: "mod", mod: "ctrl" },
-    { label: "Alt", type: "mod", mod: "alt" },
-    { label: "Shift", type: "mod", mod: "shift" },
-    { label: "Esc", type: "special", name: "Esc" },
-    { label: "Tab", type: "special", name: "Tab" },
-    { label: "~", type: "char", char: "~" },
-    { label: "/", type: "char", char: "/" },
-    { label: "|", type: "char", char: "|" },
-    { label: "-", type: "char", char: "-" },
-    { label: "←", type: "special", name: "Left" },
-    { label: "↑", type: "special", name: "Up" },
-    { label: "↓", type: "special", name: "Down" },
-    { label: "→", type: "special", name: "Right" },
-    { label: "Home", type: "special", name: "Home" },
-    { label: "End", type: "special", name: "End" },
-    { label: "PgUp", type: "special", name: "PgUp" },
-    { label: "PgDn", type: "special", name: "PgDn" },
-    { label: "Copy", type: "action", action: "copy" },
-    { label: "Paste", type: "action", action: "paste" },
+function c(lower: string, upper: string): KeyDef {
+    return { type: "char", lower, upper };
+}
+
+// Full US-ANSI layout, one inner array per visual row.
+const ROWS: KeyDef[][] = [
+    [
+        { type: "special", name: "Esc", label: "Esc" },
+        { type: "special", name: "Left", label: "←" },
+        { type: "special", name: "Up", label: "↑" },
+        { type: "special", name: "Down", label: "↓" },
+        { type: "special", name: "Right", label: "→" },
+        { type: "special", name: "Home", label: "Home" },
+        { type: "special", name: "End", label: "End" },
+        { type: "special", name: "PgUp", label: "PgUp" },
+        { type: "special", name: "PgDn", label: "PgDn" },
+        { type: "action", action: "copy", label: "Copy" },
+        { type: "action", action: "paste", label: "Paste" },
+    ],
+    [
+        c("`", "~"), c("1", "!"), c("2", "@"), c("3", "#"), c("4", "$"),
+        c("5", "%"), c("6", "^"), c("7", "&"), c("8", "*"), c("9", "("),
+        c("0", ")"), c("-", "_"), c("=", "+"),
+        { type: "special", name: "Backspace", label: "⌫", flex: 1.6 },
+    ],
+    [
+        { type: "special", name: "Tab", label: "Tab", flex: 1.6 },
+        c("q", "Q"), c("w", "W"), c("e", "E"), c("r", "R"), c("t", "T"),
+        c("y", "Y"), c("u", "U"), c("i", "I"), c("o", "O"), c("p", "P"),
+        c("[", "{"), c("]", "}"), c("\\", "|"),
+    ],
+    [
+        c("a", "A"), c("s", "S"), c("d", "D"), c("f", "F"), c("g", "G"),
+        c("h", "H"), c("j", "J"), c("k", "K"), c("l", "L"), c(";", ":"),
+        c("'", "\""),
+        { type: "special", name: "Enter", label: "↵", flex: 1.8 },
+    ],
+    [
+        { type: "mod", mod: "shift", label: "⇧", flex: 1.8 },
+        c("z", "Z"), c("x", "X"), c("c", "C"), c("v", "V"), c("b", "B"),
+        c("n", "N"), c("m", "M"), c(",", "<"), c(".", ">"), c("/", "?"),
+    ],
+    [
+        { type: "mod", mod: "ctrl", label: "Ctrl", flex: 1.4 },
+        { type: "mod", mod: "alt", label: "Alt", flex: 1.4 },
+        { type: "char", lower: " ", upper: " ", flex: 6 },
+    ],
 ];
 
 class VirtualKeyboard {
     private term: GoTTYXterm;
     private mods: Modifiers = { ctrl: false, alt: false, shift: false };
     private modButtons = new Map<keyof Modifiers, HTMLButtonElement>();
+    // Char buttons paired with their KeyDef so labels can be re-rendered on Shift.
+    private charButtons: Array<{ btn: HTMLButtonElement; def: CharKey }> = [];
     private bar: HTMLElement;
     private toggleBtn: HTMLButtonElement;
+    private resizeListener: () => void;
 
     constructor(term: GoTTYXterm) {
         this.term = term;
@@ -51,51 +86,51 @@ class VirtualKeyboard {
         this.toggleBtn = this.buildToggle();
         document.body.appendChild(this.bar);
         document.body.appendChild(this.toggleBtn);
-        this.term.setInputTransformer((input) => this.transformInput(input));
+        this.resizeListener = () => {
+            if (document.body.classList.contains("gotty-vkb-open")) {
+                this.measureHeight();
+                this.term.fit();
+            }
+        };
+        window.addEventListener("resize", this.resizeListener);
         if (localStorage.getItem(STORAGE_OPEN) === "1") {
             this.open();
         }
     }
 
-    // Called from GoTTYXterm.onData: if a modifier is armed, transform the
-    // single next character and clear the armed state.
-    private transformInput(input: string): string {
-        if (!this.anyArmed()) {
-            return input;
-        }
-        if (input.length !== 1) {
-            this.clearMods();
-            return input;
-        }
-        const out = encodeChar(input, this.mods);
-        this.clearMods();
-        return out;
-    }
-
-    private anyArmed(): boolean {
-        return this.mods.ctrl || this.mods.alt || this.mods.shift;
-    }
-
-    private clearMods(): void {
-        this.mods = { ctrl: false, alt: false, shift: false };
-        this.modButtons.forEach((b) => b.classList.remove("armed"));
+    private clearOneShot(): void {
+        // Ctrl/Alt are one-shot; Shift is a sticky layer and is left intact.
+        this.mods.ctrl = false;
+        this.mods.alt = false;
+        this.modButtons.get("ctrl")!.classList.remove("armed");
+        this.modButtons.get("alt")!.classList.remove("armed");
     }
 
     private toggleMod(mod: keyof Modifiers): void {
         this.mods[mod] = !this.mods[mod];
         this.modButtons.get(mod)!.classList.toggle("armed", this.mods[mod]);
+        if (mod === "shift") {
+            this.renderLabels();
+        }
+        this.term.focus();
+    }
+
+    private renderLabels(): void {
+        for (const { btn, def } of this.charButtons) {
+            btn.textContent = this.mods.shift ? def.upper : def.lower;
+        }
+    }
+
+    private sendChar(def: CharKey): void {
+        const ch = this.mods.shift ? def.upper : def.lower;
+        this.term.sendString(encodeChar(ch, { ctrl: this.mods.ctrl, alt: this.mods.alt, shift: false }));
+        this.clearOneShot();
         this.term.focus();
     }
 
     private sendSpecial(name: string): void {
         this.term.sendString(encodeSpecial(name, this.mods));
-        this.clearMods();
-        this.term.focus();
-    }
-
-    private sendChar(ch: string): void {
-        this.term.sendString(encodeChar(ch, this.mods));
-        this.clearMods();
+        this.clearOneShot();
         this.term.focus();
     }
 
@@ -109,7 +144,7 @@ class VirtualKeyboard {
                 console.warn("clipboard write failed", e);
             }
         }
-        this.clearMods();
+        this.clearOneShot();
         this.term.focus();
     }
 
@@ -124,19 +159,29 @@ class VirtualKeyboard {
                 console.warn("clipboard read failed", e);
             }
         }
-        this.clearMods();
+        this.clearOneShot();
         this.term.focus();
+    }
+
+    private measureHeight(): void {
+        const h = this.bar.offsetHeight;
+        if (h > 0) {
+            document.documentElement.style.setProperty("--gotty-vkb-h", h + "px");
+        }
     }
 
     private open(): void {
         document.body.classList.add("gotty-vkb-open");
         localStorage.setItem(STORAGE_OPEN, "1");
+        this.term.setSoftKeyboardSuppressed(true);
+        this.measureHeight();
         this.term.fit();
     }
 
     private close(): void {
         document.body.classList.remove("gotty-vkb-open");
         localStorage.setItem(STORAGE_OPEN, "0");
+        this.term.setSoftKeyboardSuppressed(false);
         this.term.fit();
     }
 
@@ -159,35 +204,50 @@ class VirtualKeyboard {
     private buildBar(): HTMLElement {
         const bar = document.createElement("div");
         bar.id = "gotty-vkb-bar";
-        for (const key of KEYS) {
-            const btn = document.createElement("button");
-            btn.className = "gotty-vkb-key";
-            btn.textContent = key.label;
-            // Keep xterm's textarea focused so the soft keyboard stays open
-            // and armed modifiers can transform the next typed character.
-            btn.addEventListener("mousedown", (e) => e.preventDefault());
-            btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-            btn.addEventListener("click", (e) => {
-                e.preventDefault();
-                switch (key.type) {
-                    case "mod":
-                        this.toggleMod(key.mod);
-                        break;
-                    case "special":
-                        this.sendSpecial(key.name);
-                        break;
-                    case "char":
-                        this.sendChar(key.char);
-                        break;
-                    case "action":
-                        key.action === "copy" ? this.copy() : this.paste();
-                        break;
+        for (const row of ROWS) {
+            const rowEl = document.createElement("div");
+            rowEl.className = "gotty-vkb-row";
+            for (const key of row) {
+                const btn = document.createElement("button");
+                btn.className = "gotty-vkb-key";
+                if (key.flex) {
+                    btn.style.flex = String(key.flex);
                 }
-            });
-            if (key.type === "mod") {
-                this.modButtons.set(key.mod, btn);
+                if (key.type === "char") {
+                    btn.textContent = key.lower;
+                    this.charButtons.push({ btn, def: key });
+                    if (key.lower === " ") {
+                        btn.classList.add("gotty-vkb-space");
+                    }
+                } else {
+                    btn.textContent = key.label;
+                }
+                // Keep xterm's textarea focused (never blur) on tap.
+                btn.addEventListener("mousedown", (e) => e.preventDefault());
+                btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+                btn.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    switch (key.type) {
+                        case "char":
+                            this.sendChar(key);
+                            break;
+                        case "special":
+                            this.sendSpecial(key.name);
+                            break;
+                        case "mod":
+                            this.toggleMod(key.mod);
+                            break;
+                        case "action":
+                            key.action === "copy" ? this.copy() : this.paste();
+                            break;
+                    }
+                });
+                if (key.type === "mod") {
+                    this.modButtons.set(key.mod, btn);
+                }
+                rowEl.appendChild(btn);
             }
-            bar.appendChild(btn);
+            bar.appendChild(rowEl);
         }
         return bar;
     }
@@ -195,7 +255,7 @@ class VirtualKeyboard {
     private injectStyles(): void {
         const style = document.createElement("style");
         style.textContent = `
-:root { --gotty-vkb-h: 46px; }
+:root { --gotty-vkb-h: 230px; }
 #gotty-vkb-btn {
     position: fixed;
     bottom: 12px;
@@ -223,28 +283,28 @@ body.gotty-vkb-open #gotty-vkb-btn { bottom: calc(var(--gotty-vkb-h) + 14px); }
     left: 0;
     right: 0;
     bottom: 0;
-    height: var(--gotty-vkb-h);
     z-index: 9998;
     display: none;
-    align-items: center;
+    flex-direction: column;
     gap: 4px;
-    padding: 4px 6px;
+    padding: 4px;
     box-sizing: border-box;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    background: rgba(20,20,20,0.95);
+    background: rgba(20,20,20,0.96);
     backdrop-filter: blur(8px);
     border-top: 1px solid rgba(255,255,255,0.12);
 }
 body.gotty-vkb-open #gotty-vkb-bar { display: flex; }
 body.gotty-vkb-open #terminal { height: calc(100% - var(--gotty-vkb-h)); }
-#gotty-vkb-bar::-webkit-scrollbar { height: 0; }
+.gotty-vkb-row {
+    display: flex;
+    gap: 4px;
+    width: 100%;
+}
 .gotty-vkb-key {
-    flex: 0 0 auto;
-    min-width: 38px;
-    height: 36px;
-    padding: 0 10px;
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    padding: 0;
     border: 1px solid rgba(255,255,255,0.18);
     border-radius: 6px;
     background: rgba(255,255,255,0.08);
@@ -261,15 +321,18 @@ body.gotty-vkb-open #terminal { height: calc(100% - var(--gotty-vkb-h)); }
     background: #2563eb;
     border-color: #2563eb;
 }
+@media (max-width: 480px) {
+    .gotty-vkb-key { height: 30px; font-size: 12px; }
+}
 `;
         document.head.appendChild(style);
     }
 }
 
 function isTouchDevice(): boolean {
-    // Opt-in override for non-touch devices (compact keyboards without Esc,
-    // and for testing): set localStorage["gotty-vkb-force"] = "1".
-    if (localStorage.getItem("gotty-vkb-force") === "1") {
+    // Opt-in override for non-touch devices (and for testing): set
+    // localStorage["gotty-vkb-force"] = "1".
+    if (localStorage.getItem(STORAGE_FORCE) === "1") {
         return true;
     }
     return "ontouchstart" in window || navigator.maxTouchPoints > 0;
