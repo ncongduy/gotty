@@ -1,0 +1,31 @@
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine3.24 AS build
+
+# ncongduy/gotty, built from this repo's source. The web assets are committed
+# in bindata/, so go build is the whole build. It runs natively on the build
+# host and cross-compiles for the target platform.
+ARG TARGETOS TARGETARCH TARGETVARIANT
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN GOARM=${TARGETVARIANT#v} CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -ldflags "-s -w -X main.Version=$VERSION" -o /go/bin/gotty .
+
+FROM alpine:3.24.3
+
+# ssh stops with "No user exists for uid 1000" unless that uid is in
+# /etc/passwd, so the image has a user for the uid the pod runs as. ssh also
+# makes ~/.ssh on every start if it is missing, which fails on the read-only
+# root filesystem; so it exists already, empty.
+RUN apk add --no-cache openssh-client-default \
+    && adduser -D -u 1000 gotty \
+    && install -d -m 700 -o gotty -g gotty /home/gotty/.ssh
+
+COPY --from=build /go/bin/gotty /usr/local/bin/gotty
+
+USER 1000
+EXPOSE 8080
+# No default command on purpose: without one, gotty refuses to start. It never
+# falls back to an open shell.
+ENTRYPOINT ["gotty"]
