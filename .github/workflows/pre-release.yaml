@@ -9,6 +9,7 @@ env:
 jobs:
   pre-release-docker:
     name: "Pre Release Docker"
+    if: github.repository == 'sorenisanerd/gotty'
     runs-on: "ubuntu-latest"
     steps:
     -
